@@ -3,7 +3,7 @@
   'use strict';
   var P = PROGRAM;
   var KEY = 'workoutlog.v1';
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
   var ORDER = ['LA', 'UA', 'LB', 'UB'];
 
   /* ---------- storage ---------- */
@@ -472,7 +472,7 @@
     }
     var b = UI.body, prev = lastOf(DB.body);
     var h = '<div class="scroll"><div class="stack" style="gap:4px"><div class="kicker">Every 2 weeks · inches · same time of day</div><h1 class="h1">Body measurements</h1>' +
-      (prev ? '<div class="small">Last measured ' + fmtDay(prev.date) + (daysBetween(prev.date, today()) < 12 ? '. Next due around ' + fmtShort(addDays(prev.date, 14)) + '.' : '. Due now.') + ' Values start from last time.</div>' : '<div class="small">Values below are placeholders. Set each one, then save.</div>') + '</div>';
+      (prev ? '<div class="small">Last measured ' + fmtDay(prev.date) + (daysBetween(prev.date, today()) < 12 ? '. Next due around ' + fmtShort(addDays(prev.date, 14)) + '.' : '. Due now.') + ' Values start from last time.</div>' : '<div class="small">Values below are placeholders. Set each one, then save.</div>') + '<button class="btn link" style="align-self:flex-start;padding:0;min-height:36px" data-a="how-measure">How to measure</button></div>';
     h += '<div class="grid2"><div class="stat dark"><span class="label">Shoulder : waist</span><span class="v">' + (b.shoulders / b.waist).toFixed(2) + '</span><span class="small">Goal: up 0.03–0.06 by wk 12</span></div>' +
       '<div class="stat dark"><span class="label">Chest : waist</span><span class="v">' + (b.chest / b.waist).toFixed(2) + '</span><span class="small">' + (prev ? 'Waist ' + (b.waist - prev.waist >= 0 ? '+' : '') + fix2(b.waist - prev.waist) + ' in vs last' : 'Updates as you adjust') + '</span></div></div>';
     BODY_SINGLE.forEach(function (f) { h += stepper(f[1], fix2(b[f[0]]), 'b-' + f[0], 'b-step-' + f[0], true); });
@@ -833,6 +833,7 @@
     toggle: function (v) { DB.settings[v] = !DB.settings[v]; save(); },
     reset: function () { if (!confirm('Erase all workout data on this phone? Export first if you want a copy.')) return; if (!confirm('This cannot be undone. Erase everything?')) return; DB = fresh(); save(); UI.screen = null; UI.tab = 'today'; },
     guide: function (v) { UI.guideOpen = UI.guideOpen === v ? '' : v; },
+    'how-measure': function () { UI.guideOpen = 'measure'; UI.tab = 'guide'; UI.screen = null; },
     detail: function (v) { UI.detail = v; UI.screen = 'detail'; },
     'del-set': function (v) { if (!confirm('Delete this set?')) return; DB.sets = DB.sets.filter(function (s) { return s.id !== v; }); save(); },
     'del-session': function (v) {

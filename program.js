@@ -158,6 +158,19 @@ var PROGRAM = (function () {
       'A lift stalls for 2 sessions.',
       'Joint pain rising.'
     ] },
+    { id: 'measure', title: 'How to measure', lines: [
+      'Measure every 2 weeks, first thing in the morning before eating or training, after using the bathroom. Pumped muscles read 0.25–0.5 in. bigger.',
+      'Use a flexible cloth tape (a self-locking one such as a MyoTape helps when measuring yourself). Stand relaxed and breathe normally. Read the tape to the nearest 0.25 in.',
+      'Tape snug on the skin but not pressing in, and level all the way around. Check it in a mirror. Take each measurement twice; if they differ by more than 0.25 in., take a third and use the average of the two closest.',
+      'Waist: tape around the navel, level. Stand tall, belly relaxed (don\u2019t suck in), and read at the end of a normal breath out.',
+      'Shoulders: around the widest point of both shoulders (the outside of the delts), arms relaxed at your sides, tape passing over the top of the chest and the shoulder blades. This one needs a helper or a mirror; if alone, use the same method every time.',
+      'Chest: tape under the armpits and across the nipples, level across the shoulder blades. Arms relaxed at your sides, read at the end of a normal breath out.',
+      'Arm (flexed): raise the arm to shoulder height, bend the elbow about 90 degrees and flex hard. Tape around the peak of the biceps, at a right angle to the upper arm.',
+      'Thigh: stand with feet hip-width, weight even, leg relaxed. Tape at the midpoint between the hip crease and the top of the kneecap, level. Mark the spot once (measure up from the kneecap, e.g. 7 in.) and use that distance each time.',
+      'Calf: stand with weight even on both feet, calf relaxed. Slide the tape up and down to find the widest point.',
+      'Measure left and right the same way, one right after the other. Same tape, same time of day, same order every time; consistency matters more than perfect technique.',
+      'Judge trends over 2–3 measurements, not one reading. Changes under 0.25 in. are within measuring error.'
+    ] },
     { id: 'food', title: 'Nutrition', lines: [
       'Calories about 1,880–2,080 a day (300–500 deficit).',
       'Protein 140–160 g across 4 meals.',
