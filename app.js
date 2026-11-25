@@ -3,13 +3,13 @@
   'use strict';
   var P = PROGRAM;
   var KEY = 'workoutlog.v1';
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var ORDER = ['LA', 'UA', 'LB', 'UB'];
 
   /* ---------- storage ---------- */
   function fresh() {
     return { v: 1, settings: { start: '2026-11-29', baseHR: null, keepAwake: true, sound: true, lastExport: null },
-      pos: { wk: 1, done: [] }, lighten: null, breakAck: null, sessions: [], sets: [], checks: [], body: [], cardio: [], swaps: {}, active: null };
+      pos: { wk: 1, done: [] }, lighten: null, breakAck: null, sessions: [], sets: [], checks: [], body: [], cardio: [], nutrition: [], swaps: {}, active: null };
   }
   function load() {
     try {
@@ -286,6 +286,11 @@
     h += breakBanner();
     if (exportDue()) h += '<div class="note warn row" style="gap:10px"><span class="grow">Weekly backup is due.</span><button class="btn ghost" style="min-height:44px" data-a="export">Export</button></div>';
     var dow = new Date().getDay(), slot = P.CALENDAR_DAY[dow];
+    if (dow === 6) {
+      var li = DB.settings.lastNutritionImport, recent = li && daysBetween(li.slice(0, 10), today()) < 1;
+      if (recent && DB.nutrition.length) h += '<div class="card pad stack"><div class="label">Nutrition this week</div><div style="font-size:17px;line-height:1.4">' + esc(nutritionLine(nutritionWeek(lastOf(DB.nutrition).date))) + '</div><button class="btn link" data-a="tab" data-v="progress">See details</button></div>';
+      else h += '<div class="note info row" style="gap:10px"><span class="grow">Import this week\u2019s Cronometer file.</span><button class="btn ghost" style="min-height:44px" data-a="settings">Import</button></div>';
+    }
     if (dow === 2 || dow === 5 || dow === 6) h += '<div class="card pad stack"><div class="label">Today on the calendar</div><div style="font-size:17px;line-height:1.4">' + esc(slot) + (dow === 5 && P.INTERVALS[DB.pos.wk] ? ' (' + P.INTERVALS[DB.pos.wk] + ')' : '') + '</div><button class="btn ghost" data-a="cardio">Log a walk or intervals</button></div>';
 
     var doneEx = 0;
@@ -507,7 +512,7 @@
 
   function renderProgress() {
     var h = '<div class="scroll"><div class="stack" style="gap:4px"><div class="kicker">Week ' + Math.min(12, DB.pos.wk) + ' of 12</div><h1 class="h1">Progress</h1></div>';
-    if (!DB.sets.length && !DB.checks.length && !DB.body.length) return h + '<div class="sub">Nothing logged yet. Your trends show here after your first sessions and check-ins.</div></div>';
+    if (!DB.sets.length && !DB.checks.length && !DB.body.length && !DB.nutrition.length) return h + '<div class="sub">Nothing logged yet. Your trends show here after your first sessions and check-ins.</div></div>';
     var cks = DB.checks.filter(function (c) { return c.bw; }).slice().sort(function (x, y) { return x.date < y.date ? -1 : 1; });
     var bwPts = cks.map(function (c) {
       var from = addDays(c.date, -6), win = cks.filter(function (x) { return x.date >= from && x.date <= c.date; });
@@ -516,6 +521,29 @@
     h += '<div class="card pad stack chart"><div class="label">Body weight, 7-day average (lb)</div>' + lineChart(bwPts, { label: 'Body weight', fmt: fix1 }) + '</div>';
     var waist = DB.body.map(function (b) { return { x: parseD(b.date).getTime(), y: b.waist }; });
     h += '<div class="card pad stack chart"><div class="label">Waist (in)</div>' + lineChart(waist, { label: 'Waist', fmt: fix2 }) + '</div>';
+    if (DB.nutrition.length) {
+      var wkN = nutritionWeek(lastOf(DB.nutrition).date), fullAll = DB.nutrition.filter(fullDay), stale = '';
+      if (!wkN.logged && fullAll.length) { stale = 'No fully logged days in the latest week (' + fmtShort(wkN.from) + '\u2013' + fmtShort(wkN.to) + '). Showing the most recent week that has some. '; wkN = nutritionWeek(lastOf(fullAll).date); }
+      var tile = function (label, v, unit, lo, hi) {
+        var st = nutritionStatus(v, lo, hi);
+        return '<div class="stat"><span class="label">' + label + '</span><span class="v">' + (v == null ? '–' : Math.round(v).toLocaleString('en-US')) + '<span style="font-size:16px"> ' + unit + '</span></span>' +
+          '<span class="small">Target ' + lo.toLocaleString('en-US') + (hi ? '–' + hi.toLocaleString('en-US') : '+') + (st ? ' · ' + st : '') + '</span></div>';
+      };
+      h += '<h2 class="h2">Nutrition, ' + fmtShort(wkN.from) + '–' + fmtShort(wkN.to) + '</h2>';
+      h += '<div class="small">' + stale + 'Averages of ' + wkN.logged + ' fully logged day' + (wkN.logged === 1 ? '' : 's') + ' out of 7. Days under ' + N.minKcal.toLocaleString('en-US') + ' kcal are left out.</div>';
+      h += '<div class="grid2">' + tile('Calories', wkN.kcal, 'kcal', N.kcal[0], N.kcal[1]) + tile('Protein', wkN.protein, 'g', N.protein[0], N.protein[1]) +
+        tile('Carbs', wkN.carbs, 'g', N.carbs[0], N.carbs[1]) + tile('Fat', wkN.fat, 'g', N.fat[0], N.fat[1]) + '</div>';
+      h += '<div class="card pad small">Protein target hit on ' + wkN.proteinDays + ' of ' + wkN.logged + ' logged days · fiber ' + (wkN.fiber == null ? '–' : Math.round(wkN.fiber) + ' g') + ' (target ' + N.fiber + '+) · about ' + fix1(wkN.drinks) + ' drinks (limit ' + N.drinksWeek + ' a week)</div>';
+      var fullDays = DB.nutrition.filter(fullDay);
+      var roll = function (m) {
+        return fullDays.map(function (o) {
+          var from = addDays(o.date, -6), win = fullDays.filter(function (x) { return x.date >= from && x.date <= o.date; });
+          return { x: parseD(o.date).getTime(), y: win.reduce(function (s, x) { return s + x[m]; }, 0) / win.length };
+        });
+      };
+      h += '<div class="card pad stack chart"><div class="label">Calories, 7-day average of logged days</div>' + lineChart(roll('kcal'), { label: 'Calories', fmt: function (v) { return Math.round(v).toLocaleString('en-US') + ' kcal'; } }) + '</div>';
+      h += '<div class="card pad stack chart"><div class="label">Protein, 7-day average of logged days</div>' + lineChart(roll('protein'), { label: 'Protein', fmt: function (v) { return Math.round(v) + ' g'; } }) + '</div>';
+    }
     var lifts = ['Hack squat', 'Neutral-grip DB bench press', 'Barbell deadlift', 'Chest-supported row'];
     lifts.forEach(function (nm) {
       var bySid = {}, order = [];
@@ -579,8 +607,14 @@
     h += '<div class="card pad stack" style="gap:10px"><div style="font-size:19px;font-weight:700">Backup and export</div>' +
       '<div class="small">Last export: ' + (s.lastExport ? fmtDay(s.lastExport.slice(0, 10)) : 'never') + '. Export every Saturday and save the files to OneDrive.</div>' +
       '<button class="btn primary" data-a="export">Export my data</button>' +
-      '<div class="small">You get a backup file (for restoring this app) and four CSV files laid out like the workbook’s Log, Daily Check, Body and Cardio sheets.</div>' +
+      '<div class="small">You get a backup file (for restoring this app), four CSV files laid out like the workbook’s Log, Daily Check, Body and Cardio sheets, and a Nutrition file once you import Cronometer data.</div>' +
       '<label class="btn" style="display:flex;align-items:center;justify-content:center">Restore from a backup file<input type="file" accept=".json,application/json" data-f="restore" style="display:none"></label></div>';
+    var lastN = lastOf(DB.nutrition);
+    h += '<div class="card pad stack" style="gap:10px"><div style="font-size:19px;font-weight:700">Nutrition (Cronometer)</div>' +
+      '<div class="small">Each Saturday, export Daily Nutrition from Cronometer, then import the file here. Re-importing the same days replaces them.</div>' +
+      '<label class="btn" style="display:flex;align-items:center;justify-content:center">Import Cronometer file<input type="file" accept=".csv,text/csv,text/comma-separated-values,text/plain" data-f="nutri" style="display:none"></label>' +
+      (UI.nutriMsg ? '<div class="note info">' + esc(UI.nutriMsg) + '</div>' : '') +
+      '<div class="small">' + (lastN ? DB.nutrition.length + ' days stored, latest ' + fmtDay(lastN.date) + '.' : 'No nutrition data yet.') + '</div></div>';
     h += '<div class="card pad stack" style="gap:10px"><div style="font-size:19px;font-weight:700">Program</div>' +
       '<label class="label" for="sstart">Start date (a Sunday)</label><input id="sstart" class="field" type="date" data-f="s-start" value="' + esc(s.start) + '">' +
       '<div class="small">Now on week ' + Math.min(12, DB.pos.wk) + '. Sessions done this week: ' + (DB.pos.done.map(function (k) { return getSession(k).name; }).join(', ') || 'none') + '.</div>' +
@@ -637,6 +671,68 @@
     render.key = key;
   }
 
+  /* ---------- nutrition (Cronometer daily-summary CSV) ---------- */
+  var N = P.NUTRITION;
+  var NUT_FIELDS = ['kcal', 'protein', 'carbs', 'fat', 'fiber', 'alcohol'];
+  function parseCSV(text) {
+    var rows = [], row = [], f = '', q = false;
+    text = text.replace(/^﻿/, '');
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ',') { row.push(f); f = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+      else f += ch;
+    }
+    if (f !== '' || row.length) { row.push(f); rows.push(row); }
+    return rows.filter(function (r) { return r.length > 1 || r[0] !== ''; });
+  }
+  function importNutrition(text) {
+    var rows = parseCSV(text); if (rows.length < 2) throw new Error('empty');
+    var h = rows[0].map(function (x) { return x.trim(); });
+    var col = function (name) { return h.indexOf(name); };
+    var iD = col('Date'), iG = col('Group'), iK = col('Energy (kcal)');
+    if (iD < 0 || iK < 0) throw new Error('format');
+    var idx = { kcal: iK, protein: col('Protein (g)'), carbs: col('Carbs (g)'), fat: col('Fat (g)'), fiber: col('Fiber (g)'), alcohol: col('Alcohol (g)') };
+    var g = function (r, i) { var v = i < 0 ? NaN : parseFloat(r[i]); return isNaN(v) ? 0 : v; };
+    var parts = [], hasTotal = {};
+    rows.slice(1).forEach(function (r) {
+      var d = (r[iD] || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+      var grp = iG >= 0 ? (r[iG] || '').trim() : 'Total';
+      if (grp === 'Total') hasTotal[d] = true;
+      var o = { date: d, grp: grp }; NUT_FIELDS.forEach(function (m) { o[m] = g(r, idx[m]); }); parts.push(o);
+    });
+    var out = {};
+    parts.forEach(function (x) {
+      if (hasTotal[x.date] && x.grp !== 'Total') return;
+      var o = out[x.date] || (out[x.date] = { date: x.date, kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, alcohol: 0 });
+      NUT_FIELDS.forEach(function (m) { o[m] += x[m]; });
+    });
+    var list = Object.keys(out).sort().map(function (d) { var o = out[d]; NUT_FIELDS.forEach(function (m) { o[m] = Math.round(o[m] * 10) / 10; }); return o; });
+    if (!list.length) throw new Error('nodays');
+    var dates = {}; list.forEach(function (o) { dates[o.date] = 1; });
+    DB.nutrition = DB.nutrition.filter(function (o) { return !dates[o.date]; }).concat(list).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    DB.settings.lastNutritionImport = new Date().toISOString();
+    save();
+    var full = list.filter(fullDay).length;
+    return list.length + ' days imported (' + fmtShort(list[0].date) + ' to ' + fmtShort(list[list.length - 1].date) + '), ' + full + ' fully logged.';
+  }
+  function fullDay(o) { return o.kcal >= N.minKcal; }
+  function nutritionWeek(endDate) {
+    var from = addDays(endDate, -6), days = DB.nutrition.filter(function (o) { return o.date >= from && o.date <= endDate; });
+    var full = days.filter(fullDay), n = full.length;
+    var avg = function (m) { return n ? full.reduce(function (s, o) { return s + o[m]; }, 0) / n : null; };
+    return { from: from, to: endDate, logged: n, kcal: avg('kcal'), protein: avg('protein'), carbs: avg('carbs'), fat: avg('fat'), fiber: avg('fiber'),
+      proteinDays: full.filter(function (o) { return o.protein >= N.protein[0]; }).length,
+      drinks: days.reduce(function (s, o) { return s + o.alcohol; }, 0) / N.gramsPerDrink };
+  }
+  function nutritionLine(w) {
+    if (!w.logged) return 'No fully logged days from ' + fmtShort(w.from) + ' to ' + fmtShort(w.to) + '.';
+    return 'Avg ' + Math.round(w.kcal).toLocaleString('en-US') + ' kcal · protein ' + Math.round(w.protein) + ' g (target ' + N.protein[0] + ') · ' + w.logged + ' of 7 days logged';
+  }
+  function nutritionStatus(v, lo, hi) { return v == null ? '' : v < lo ? 'below' : (hi && v > hi) ? 'above' : 'on target'; }
+
   /* ---------- export / import ---------- */
   function csv(rows) { return rows.map(function (r) { return r.map(function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n') + '\r\n'; }
   function buildFiles() {
@@ -653,17 +749,20 @@
     DB.body.forEach(function (b) { body.push([b.date, calWeek(b.date), b.waist, b.shoulders, b.chest, b.armL, b.armR, b.thighL, b.thighR, b.calfL, b.calfR, b.note || '']); });
     var car = [['Date', 'Week', 'Type', 'Minutes', 'Distance (mi)', 'Avg HR', 'Intervals (e.g. 6x30s)', 'RPE (1-10)', 'Notes']];
     DB.cardio.forEach(function (c) { car.push([c.date, calWeek(c.date), c.type, c.min, c.dist || '', c.hr || '', c.intervals || '', c.rpe == null ? '' : c.rpe, c.note || '']); });
+    var nut = [['Date', 'Week', 'Energy (kcal)', 'Protein (g)', 'Carbs (g)', 'Fat (g)', 'Fiber (g)', 'Alcohol (g)', 'Fully logged']];
+    DB.nutrition.forEach(function (o) { nut.push([o.date, calWeek(o.date), o.kcal, o.protein, o.carbs, o.fat, o.fiber, o.alcohol, fullDay(o) ? 'Yes' : 'No']); });
     var mk = function (name, text, type) { return new File([text], name, { type: type }); };
     files.push(mk('workout-backup-' + d + '.json', JSON.stringify(DB), 'application/json'));
     files.push(mk('Log-' + d + '.csv', csv(log), 'text/csv'));
     files.push(mk('DailyCheck-' + d + '.csv', csv(chk), 'text/csv'));
     files.push(mk('Body-' + d + '.csv', csv(body), 'text/csv'));
     files.push(mk('Cardio-' + d + '.csv', csv(car), 'text/csv'));
+    if (DB.nutrition.length) files.push(mk('Nutrition-' + d + '.csv', csv(nut), 'text/csv'));
     return files;
   }
   function doExport() {
     var files = buildFiles();
-    var done = function () { DB.settings.lastExport = new Date().toISOString(); save(); toast('Exported 5 files'); };
+    var done = function () { DB.settings.lastExport = new Date().toISOString(); save(); toast('Exported ' + files.length + ' files'); };
     if (navigator.canShare && navigator.canShare({ files: files })) {
       navigator.share({ files: files, title: 'Workout data ' + today() }).then(done).catch(function (e) { if (e && e.name !== 'AbortError') downloadAll(files, done); });
     } else downloadAll(files, done);
@@ -783,6 +882,10 @@
     var el = e.target, f = el.dataset && el.dataset.f; if (!f) return;
     var v = el.value, n = parseFloat(v);
     if (f === 'restore') { if (el.files && el.files[0]) doRestore(el.files[0]); return; }
+    if (f === 'nutri') {
+      if (el.files && el.files[0]) { var rd = new FileReader(); rd.onload = function () { try { UI.nutriMsg = importNutrition(rd.result); } catch (err) { UI.nutriMsg = 'That file doesn\u2019t look like a Cronometer daily nutrition export. It needs Date and Energy (kcal) columns.'; } render(); }; rd.readAsText(el.files[0]); }
+      el.value = ''; return;
+    }
     if (f === 'w' || f === 'r') { if (!isNaN(n) && n >= 0) { DB.active[f] = f === 'r' ? Math.round(n) : n; save(); } render(); return; }
     if (f.indexOf('c-') === 0) { var k = f.slice(2); if (k === 'note') UI.check.note = v; else if (!isNaN(n)) UI.check[k] = n; render(); return; }
     if (f.indexOf('b-') === 0) { var kb = f.slice(2); if (kb === 'note') UI.body.note = v; else if (!isNaN(n)) UI.body[kb] = n; render(); return; }

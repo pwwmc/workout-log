@@ -162,7 +162,9 @@ var PROGRAM = (function () {
       'Calories about 1,880–2,080 a day (300–500 deficit).',
       'Protein 140–160 g across 4 meals.',
       'Carbs 150–200 g, mostly around training. Fat 60–70 g. Fiber 30 g or more.',
-      'Alcohol 2 drinks a week or fewer.'
+      'Alcohol 2 drinks a week or fewer.',
+      'Each Saturday, export the Daily Nutrition file from Cronometer and import it here (Settings, Import Cronometer file). Progress then shows your averages against these targets.',
+      'Days under 1,000 kcal count as not fully logged and are left out of the averages.'
     ] },
     { id: 'goals', title: 'Week-12 targets', lines: [
       'Main lifts back to about 90–100% of 2025 bests (hack squat sets a new baseline).',
@@ -173,6 +175,8 @@ var PROGRAM = (function () {
     ] }
   ];
 
-  return { SESSIONS: SESSIONS, PHASES: PHASES, PHASE_LONG: PHASE_LONG, rx: rx, CALENDAR_DAY: CALENDAR_DAY, INTERVALS: INTERVALS, GUIDE: GUIDE, WEEKS: 12,
+  var NUTRITION = { kcal: [1880, 2080], protein: [140, 160], carbs: [150, 200], fat: [60, 70], fiber: 30, drinksWeek: 2, gramsPerDrink: 14, minKcal: 1000 };
+
+  return { NUTRITION: NUTRITION, SESSIONS: SESSIONS, PHASES: PHASES, PHASE_LONG: PHASE_LONG, rx: rx, CALENDAR_DAY: CALENDAR_DAY, INTERVALS: INTERVALS, GUIDE: GUIDE, WEEKS: 12,
     GUIDE_URL: 'https://claude.ai/artifact/HjcDSYgQS5MmXot8NTPPYK' };
 })();
