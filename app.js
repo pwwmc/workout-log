@@ -3,7 +3,7 @@
   'use strict';
   var P = PROGRAM;
   var KEY = 'workoutlog.v1';
-  var VERSION = '1.1.1';
+  var VERSION = '1.2.0';
   var ORDER = ['LA', 'UA', 'LB', 'UB'];
 
   /* ---------- storage ---------- */
@@ -88,7 +88,18 @@
       var nw = ex.invert ? Math.max(0, base - ex.inc) : base + ex.inc;
       return { w: nw, r: r.lo, why: (ex.invert ? 'Less assistance' : 'Up ' + num(ex.inc) + ' ' + u) + ': you hit ' + lastHi + ' on every set last time.', kind: 'up' };
     }
-    return { w: base, r: r.hi, why: hit ? 'Same as last time.' : 'Same as last time. Aim for ' + r.hi + ' on every set.', kind: 'same' };
+    var lastW = work[work.length - 1], tgt = lastW.rxRir;
+    if (!hit && r.prog && ex.unit !== 'bw' && ex.step > 0 && ex.role !== 'power' && lastW.rir != null && tgt != null && lastW.rir >= tgt + 2 && lastW.r >= (lastW.rxLo || r.lo) && !(painHigh && ex.care)) {
+      var uw = ex.invert ? Math.max(0, base - ex.step) : base + ex.step;
+      return { w: uw, r: r.lo, why: (ex.invert ? 'Less assistance' : 'Up ' + num(ex.step) + ' ' + u) + ': your last set had ' + (lastW.rir >= 5 ? '5+' : lastW.rir) + ' reps left, target ' + tgt + '.', kind: 'up' };
+    }
+    var missed = work.some(function (s) { return s.r < (s.rxLo || r.lo); });
+    if (missed && ex.unit !== 'bw' && ex.role !== 'power' && ex.role !== 'core' && !r.deload) {
+      var dw = ex.invert ? roundStep(base * 1.05 + ex.step / 2, ex.step) : roundStep(base * 0.95, ex.step);
+      if (dw === base) dw = ex.invert ? base + ex.step : Math.max(0, base - ex.step);
+      return { w: dw, r: r.lo, why: (ex.invert ? 'More assistance' : 'About 5% lighter') + ': a set fell short of ' + (work[0].rxLo || r.lo) + ' reps last time.', kind: 'down' };
+    }
+    return { w: base, r: r.hi, why: hit ? 'Same as last time.' : 'Same as last time. Aim for ' + r.hi + ' on every set at the target RIR.', kind: 'same' };
   }
   function lastSetsFor(name, excludeSid) {
     var hist = DB.sets.filter(function (s) { return s.ex === name && s.sid !== excludeSid; });
@@ -101,14 +112,14 @@
   /* ---------- active session ---------- */
   function ensureActive(key) {
     if (DB.active && DB.active.key === key) return DB.active;
-    DB.active = { sid: uid(), wk: DB.pos.wk, key: key, date: today(), startedAt: Date.now(), exIdx: 0, side: 'L', w: 0, r: 0, rpe: null, pain: null, timerEnd: 0, timerTotal: 0, restDone: false, warm: false };
+    DB.active = { sid: uid(), wk: DB.pos.wk, key: key, date: today(), startedAt: Date.now(), exIdx: 0, side: 'L', w: 0, r: 0, rir: null, pain: null, timerEnd: 0, timerTotal: 0, restDone: false, warm: false };
     return DB.active;
   }
   function sessSets(sid) { return DB.sets.filter(function (s) { return s.sid === sid; }); }
   function exSets(a, i) { return DB.sets.filter(function (s) { return s.sid === a.sid && s.exi === i; }); }
   function openEx(i) {
     var key = currentKey(); var a = ensureActive(key); var ex = getSession(key).ex[i];
-    a.exIdx = i; a.rpe = null; a.pain = null; UI.extra = false; UI.swapOpen = false;
+    a.exIdx = i; a.rir = null; a.pain = null; UI.extra = false; UI.swapOpen = false;
     var mine = exSets(a, i), last = mine[mine.length - 1];
     if (last) { a.w = last.w; a.r = last.r; a.side = ex.uni && last.side === 'L' ? 'R' : 'L'; }
     else { var adv = advise(ex, a.wk, a.key, a.sid); a.w = adv.w; a.r = adv.r; a.side = 'L'; }
@@ -120,9 +131,9 @@
     var mine = exSets(a, a.exIdx);
     var setNo = mine.filter(function (s) { return !ex.uni || s.side === a.side; }).length + 1;
     DB.sets.push({ id: uid(), sid: a.sid, date: a.date, wk: a.wk, key: a.key, exi: a.exIdx, ex: exName(ex), orig: ex.n, side: ex.uni ? a.side : 'Both', setNo: setNo,
-      w: ex.unit === 'bw' ? 0 : a.w, r: a.r, rpe: a.rpe, pain: a.pain, bw: ex.unit === 'bw', unit: ex.unit, dist: !!ex.dist, extra: UI.extra || false, rxSets: r.sets, rxHi: r.hi });
+      w: ex.unit === 'bw' ? 0 : a.w, r: a.r, rir: a.rir, rpe: a.rir == null ? null : 10 - a.rir, pain: a.pain, bw: ex.unit === 'bw', unit: ex.unit, dist: !!ex.dist, extra: UI.extra || false, rxSets: r.sets, rxHi: r.hi, rxLo: r.lo, rxRir: r.rir ? r.rir[1] : null });
     if (ex.uni) a.side = a.side === 'L' ? 'R' : 'L';
-    a.rpe = null; a.pain = null;
+    a.rir = null; a.pain = null;
     a.timerTotal = ex.rest; a.timerEnd = Date.now() + ex.rest * 1000; a.restDone = false;
     primeAudio(); save(); render();
   }
@@ -265,6 +276,47 @@
     return d >= 7 || (sat && d >= 1);
   }
 
+  /* ---------- daily basics: protein and weight trend ---------- */
+  function checkOn(d) { return DB.checks.filter(function (c) { return c.date === d; })[0] || null; }
+  function proteinOn(d) {
+    var c = checkOn(d); if (c && c.protein > 0) return c.protein;
+    var n = DB.nutrition.filter(function (o) { return o.date === d && fullDay(o); })[0];
+    return n ? n.protein : null;
+  }
+  function proteinWeek(end) {
+    var vals = []; for (var i = 6; i >= 0; i--) { var v = proteinOn(addDays(end, -i)); if (v != null) vals.push(v); }
+    return { n: vals.length, avg: vals.length ? vals.reduce(function (s, x) { return s + x; }, 0) / vals.length : null, hit: vals.filter(function (v) { return v >= N.protein[0]; }).length };
+  }
+  function bwAvg(end) {
+    var from = addDays(end, -6), w = DB.checks.filter(function (c) { return c.bw && c.date >= from && c.date <= end; });
+    return w.length ? { avg: w.reduce(function (s, c) { return s + c.bw; }, 0) / w.length, n: w.length } : null;
+  }
+  function weightTrend() {
+    var t = today(), cur = bwAvg(t), prev = bwAvg(addDays(t, -7));
+    return { cur: cur, prev: prev, change: cur && prev && cur.n >= 3 && prev.n >= 3 ? cur.avg - prev.avg : null };
+  }
+  function trendStatus(ch) {
+    if (ch == null) return '';
+    var loss = -ch;
+    if (loss < N.lossPerWeek[0] - 0.1) return loss < 0 ? 'up, not down' : 'slower than target';
+    if (loss > 1.5) return 'faster than target';
+    return 'on target';
+  }
+  function dailyCard() {
+    var t = today(), c = checkOn(t), pToday = c && c.protein ? c.protein : 0, pw = proteinWeek(t), wt = weightTrend();
+    var pct = Math.min(100, Math.round(pToday / N.protein[0] * 100));
+    var h = '<div class="card pad stack daily"><div class="row" style="justify-content:space-between"><div class="label">Daily basics</div><button class="btn link" style="min-height:36px;padding:0" data-a="tab" data-v="progress">Trends</button></div>';
+    h += '<div class="grid2"><div class="stat dark"><span class="label">Weight, 7-day avg</span><span class="v">' + (wt.cur ? fix1(wt.cur.avg) : '–') + '<span style="font-size:16px"> lb</span></span><span class="small">' +
+      (wt.change != null ? (wt.change > 0 ? '+' : '') + fix1(wt.change) + ' lb vs last week · ' + trendStatus(wt.change) : 'Goal: down 0.5–1.0 lb a week') + '</span></div>' +
+      '<div class="stat dark"><span class="label">Protein today</span><span class="v">' + Math.round(pToday) + '<span style="font-size:16px"> g</span></span><span class="small">Target ' + N.protein[0] + '–' + N.protein[1] + ' · 7-day avg ' + (pw.avg == null ? '–' : Math.round(pw.avg) + ' g') + '</span></div></div>';
+    h += '<div class="progress" aria-label="Protein ' + pct + '% of target"><div style="width:' + pct + '%"></div></div>';
+    h += '<div class="label">Add protein</div><div class="chips" style="grid-template-columns:repeat(5,minmax(0,1fr))">' +
+      N.proteinAdd.map(function (g) { return '<button class="chip sm" data-a="p-add" data-v="' + g + '">+' + g + '</button>'; }).join('') +
+      '<button class="chip sm" data-a="p-add" data-v="-10" aria-label="Remove 10 grams">−10</button></div>';
+    if (!c || !c.bw) h += '<button class="btn ghost" data-a="tab" data-v="check">Log this morning\u2019s weight</button>';
+    return h + '</div>';
+  }
+
   function renderToday() {
     var h = '';
     if (DB.pos.wk > 12) {
@@ -285,13 +337,16 @@
     if (DB.lighten && DB.lighten.wk === wk) h += '<div class="note info">This week runs about ' + Math.round((1 - DB.lighten.f) * 100) + '% lighter with one set fewer, after your break.</div>';
     h += breakBanner();
     if (exportDue()) h += '<div class="note warn row" style="gap:10px"><span class="grow">Weekly backup is due.</span><button class="btn ghost" style="min-height:44px" data-a="export">Export</button></div>';
-    var dow = new Date().getDay(), slot = P.CALENDAR_DAY[dow];
+    h += dailyCard();
+    var dow = new Date().getDay(), slot = dow === 5 ? 'Boxing conditioning: ' + (P.FRIDAY[Math.min(12, DB.pos.wk)] || P.CALENDAR_DAY[5]) : P.CALENDAR_DAY[dow];
+    var lb = lastOf(DB.body);
+    if (dow === 6 && (!lb || daysBetween(lb.date, today()) >= P.MEASURE_DAYS - 2)) h += '<div class="note info row" style="gap:10px"><span class="grow">Monthly measurements are due (waist, shoulders, arms).</span><button class="btn ghost" style="min-height:44px" data-a="tab" data-v="body">Measure</button></div>';
     if (dow === 6) {
       var li = DB.settings.lastNutritionImport, recent = li && daysBetween(li.slice(0, 10), today()) < 1;
       if (recent && DB.nutrition.length) h += '<div class="card pad stack"><div class="label">Nutrition this week</div><div style="font-size:17px;line-height:1.4">' + esc(nutritionLine(nutritionWeek(lastOf(DB.nutrition).date))) + '</div><button class="btn link" data-a="tab" data-v="progress">See details</button></div>';
       else h += '<div class="note info row" style="gap:10px"><span class="grow">Import this week\u2019s Cronometer file.</span><button class="btn ghost" style="min-height:44px" data-a="settings">Import</button></div>';
     }
-    if (dow === 2 || dow === 5 || dow === 6) h += '<div class="card pad stack"><div class="label">Today on the calendar</div><div style="font-size:17px;line-height:1.4">' + esc(slot) + (dow === 5 && P.INTERVALS[DB.pos.wk] ? ' (' + P.INTERVALS[DB.pos.wk] + ')' : '') + '</div><button class="btn ghost" data-a="cardio">Log a walk or intervals</button></div>';
+    if (dow === 2 || dow === 5 || dow === 6) h += '<div class="card pad stack"><div class="label">Today on the calendar</div><div style="font-size:17px;line-height:1.4">' + esc(slot) + '</div><button class="btn ghost" data-a="cardio">Log cardio or footwork</button></div>';
 
     var doneEx = 0;
     var cards = sess.ex.map(function (ex, i) {
@@ -306,12 +361,12 @@
         '<span class="num">' + (complete ? '✓' : (i + 1)) + '</span><span class="grow stack" style="gap:6px">' +
         '<span class="exname">' + esc(exName(ex)) + '</span><span class="sub">' + esc(target) + '</span>' +
         '<span class="meta"><span class="pills">' + pills + '</span><span class="small" style="font-weight:600">' + (complete ? 'Done' : (d ? d + ' of ' + r.sets + ' sets' : r.sets + (r.sets === 1 ? ' set' : ' sets'))) + '</span>' +
-        (ex.uni ? '<span class="tag uni">LEFT / RIGHT</span>' : '') + (ex.care ? '<span class="tag care">SHOULDER CARE</span>' : '') + (swapped ? '<span class="tag swap">SWAP</span>' : '') +
+        (ex.uni ? '<span class="tag uni">LEFT / RIGHT</span>' : '') + (ex.role === 'power' ? '<span class="tag power">POWER</span>' : '') + (ex.day === 'H' ? '<span class="tag heavy">HEAVY</span>' : ex.day === 'M' ? '<span class="tag moderate">MODERATE</span>' : '') + (ex.care ? '<span class="tag care">SHOULDER CARE</span>' : '') + (ex.pt ? '<span class="tag pt">CHECK WITH PT</span>' : '') + (swapped ? '<span class="tag swap">SWAP</span>' : '') +
         '</span></span>' + IC.chev + '</button>';
     }).join('');
     h += '<div class="row"><div class="progress"><div style="width:' + Math.round(doneEx / sess.ex.length * 100) + '%"></div></div><div style="font-size:16px;font-weight:600;white-space:nowrap">' + doneEx + ' of ' + sess.ex.length + ' done</div></div>';
     var warm = a ? a.warm : UI.warmPre;
-    h += '<button class="warm' + (warm ? ' on' : '') + '" data-a="warm" aria-pressed="' + !!warm + '"><span class="box">' + (warm ? IC.check : '') + '</span><span class="stack" style="gap:2px"><span style="font-size:18px;font-weight:600">Warm-up, 8–10 min</span><span class="small">Bike 5 min · band pull-aparts · external rotation · wall slides' + (sess.lower ? ' · bodyweight squats, glute bridges, leg swings' : '') + '</span></span></button>';
+    h += '<button class="warm' + (warm ? ' on' : '') + '" data-a="warm" aria-pressed="' + !!warm + '"><span class="box">' + (warm ? IC.check : '') + '</span><span class="stack" style="gap:2px"><span style="font-size:18px;font-weight:600">Warm-up, 8–10 min</span><span class="small">Bike 5 min · band pull-aparts · external rotation · wall slides' + (sess.lower ? ' · bodyweight squats, glute bridges, leg swings' : '') + '. Then the power drills, while fresh.</span></span></button>';
     h += cards;
     h += '<button class="btn" data-a="finish-open">Finish session</button>';
     h += '<div class="grid2"><button class="btn link" data-a="choose">Choose another session</button><button class="btn link" data-a="cardio">Log cardio</button></div>';
@@ -336,7 +391,7 @@
     h += '<div class="stack"><h1 class="h1 sm">' + esc(name) + '</h1>' +
       '<div style="font-size:18px;font-weight:600">' + r.sets + ' × ' + rangeTxt(r) + (ex.dist ? ' m' : '') + (ex.uni ? ' each side' : '') + ' · ' + esc(r.eff) + '</div>' +
       '<div class="sub">Rest ' + esc(ex.restTxt) + '</div>' +
-      (ex.care ? '<div><span class="tag care">SHOULDER CARE · pain rule applies</span></div>' : '') +
+      (ex.care || ex.pt ? '<div class="row" style="flex-wrap:wrap;gap:6px">' + (ex.care ? '<span class="tag care">SHOULDER CARE · pain rule applies</span>' : '') + (ex.pt ? '<span class="tag pt">CHECK WITH PT before doing this</span>' : '') + '</div>' : '') +
       (DB.swaps[ex.n] ? '<div class="small">Swapped in for ' + esc(ex.n) + '. Logged under its own name.</div>' : '') +
       '<div class="cue">' + esc(DB.swaps[ex.n] ? 'Same purpose as ' + ex.n + '. Use the usual technique for this exercise.' : ex.cue) + '</div>' +
       (r.note ? '<div class="note info">' + esc(r.note) + '</div>' : '') +
@@ -361,7 +416,7 @@
         }
       } else {
         sets.forEach(function (s, i) {
-          var m = []; if (s.extra) m.push('Extra set'); if (s.rpe) m.push('RPE ' + s.rpe); if (s.pain != null) m.push('Shoulder ' + s.pain);
+          var m = []; if (s.extra) m.push('Extra set'); if (s.rir != null) m.push('RIR ' + (s.rir >= 5 ? '5+' : s.rir)); else if (s.rpe) m.push('RPE ' + s.rpe); if (s.pain != null) m.push('Shoulder ' + s.pain);
           h += '<div class="li row"><span class="setn">' + (i + 1) + '</span><span class="grow stack" style="gap:2px"><span class="setd">' + setTxt(ex, s, true) + '</span>' + (m.length ? '<span class="small">' + m.join(' · ') + '</span>' : '') + '</span></div>';
         });
       }
@@ -373,7 +428,9 @@
       if (ex.uni) h += '<div class="stack"><div class="label">Side (left first)</div><div class="seg"><button class="' + (a.side === 'L' ? 'on' : '') + '" data-a="side" data-v="L">Left</button><button class="' + (a.side === 'R' ? 'on' : '') + '" data-a="side" data-v="R">Right</button></div></div>';
       if (ex.unit !== 'bw') h += stepper(ex.wLabel || (u === 'kg' ? 'Weight (kg)' : 'Weight (lb)'), num(a.w), 'w', 'w-step');
       h += stepper(ex.dist ? 'Distance (m)' : (ex.repsLabel || 'Reps'), String(a.r), 'r', 'r-step', false, 'numeric');
-      h += '<div class="stack"><div class="label">RPE (optional) · 10 = nothing left</div>' + chipRow(nums(5, 10).map(function (n) { return n; }), 6, a.rpe, 'rpe') + '</div>';
+      var tRir = ex.uni ? P.rirFor(r, Math.min(r.sets, sets.filter(function (s) { return !s.extra && s.side === a.side; }).length + 1)) : P.rirFor(r, Math.min(r.sets, d + 1));
+      h += '<div class="stack"><div class="label">Reps left in reserve (optional) · 0 = couldn\u2019t do another' + (tRir != null && !UI.extra ? ' · target ' + tRir : '') + '</div>' +
+        chipRow([0, 1, 2, 3, 4, 5].map(function (n) { return { v: n, l: n === 5 ? '5+' : String(n) }; }), 6, a.rir, 'rir', function (n) { return tRir != null && n < tRir ? '#C2410C' : '#1D4ED8'; }) + '</div>';
       h += '<div class="stack"><div class="label">Left shoulder pain (optional) · 0–10</div>' + chipRow(nums(0, 10), 6, a.pain, 'pain', painTone, true);
       if (a.pain != null) h += a.pain >= 6 ? '<div class="note stop">Stop this movement today and tell your PT.</div>' : a.pain >= 4 ? '<div class="note warn">Hold the load. Cut sets by a third or use the alternative.</div>' : '<div class="note info">0–3: carry on.</div>';
       h += '</div></div>';
@@ -433,6 +490,7 @@
   }
 
   function lastOf(arr) { return arr.length ? arr[arr.length - 1] : null; }
+  function lastBw() { for (var i = DB.checks.length - 1; i >= 0; i--) if (DB.checks[i].bw) return DB.checks[i].bw; return null; }
   function baseHR() {
     if (DB.settings.baseHR) return +DB.settings.baseHR;
     var w1 = DB.checks.filter(function (c) { return c.hr && calWeek(c.date) === 1; });
@@ -442,15 +500,19 @@
   function renderCheck() {
     if (!UI.check) {
       var t = today(), ex = DB.checks.filter(function (c) { return c.date === t; })[0], prev = lastOf(DB.checks);
-      UI.check = ex ? JSON.parse(JSON.stringify(ex)) : { date: t, sleep: prev ? prev.sleep : 7.5, hr: prev ? prev.hr : 60, bw: prev ? prev.bw : 172, ready: null, sore: null, pain: null, pt: false, note: '' };
-      UI.check.isEdit = !!ex;
+      var base = { date: t, sleep: prev && prev.sleep != null ? prev.sleep : 7.5, hr: prev && prev.hr ? prev.hr : 60, bw: lastBw() || 172, ready: null, sore: null, pain: null, pt: false, protein: 0, note: '' };
+      UI.check = ex ? JSON.parse(JSON.stringify(ex)) : base;
+      ['sleep', 'hr', 'bw'].forEach(function (k) { if (UI.check[k] == null || UI.check[k] === '') { UI.check[k] = base[k]; UI.check['_new_' + k] = true; } });
+      if (UI.check.protein == null) UI.check.protein = 0;
+      UI.check.isEdit = !!ex && ex.sleep != null;
     }
     var c = UI.check, b = baseHR();
     var h = '<div class="scroll" style="gap:18px"><div class="stack" style="gap:4px"><div class="kicker">' + fmtDay(c.date) + (c.isEdit ? ' · already saved, editing' : '') + '</div><h1 class="h1">Daily check</h1></div>';
     h += stepper('Sleep (hours)', fix1(c.sleep), 'c-sleep', 'c-step-sleep', true);
     h += stepper('Resting heart rate (bpm)' + (b ? ' · baseline ' + b : ''), String(c.hr), 'c-hr', 'c-step-hr', true, 'numeric');
     if (b && c.hr >= b + 5) h += '<div class="note warn">5 or more above baseline. If this lasts a week with low readiness, deload early.</div>';
-    h += stepper('Body weight (lb)', fix1(c.bw), 'c-bw', 'c-step-bw', true);
+    h += stepper('Body weight (lb) · after the bathroom, before eating', fix1(c.bw), 'c-bw', 'c-step-bw', true);
+    h += stepper('Protein so far today (g) · target ' + N.protein[0] + '–' + N.protein[1], String(Math.round(c.protein || 0)), 'c-protein', 'c-step-protein', true, 'numeric');
     h += '<div class="stack"><div class="label">Readiness · 1 = drained, 5 = ready to go</div>' + chipRow(nums(1, 5), 5, c.ready, 'c-ready') + '</div>';
     h += '<div class="stack"><div class="label">Soreness · 1 = none, 5 = very sore</div>' + chipRow(nums(1, 5), 5, c.sore, 'c-sore') + '</div>';
     h += '<div class="stack"><div class="label">Left shoulder on waking · 0–10</div>' + chipRow(nums(0, 10), 6, c.pain, 'c-pain', painTone, true) + '</div>';
@@ -458,23 +520,25 @@
     h += '<div class="stack"><label class="label" for="cnote">Notes (optional)</label><textarea id="cnote" data-f="c-note" placeholder="Slept badly, knee stiff, etc.">' + esc(c.note) + '</textarea></div>';
     h += '<button class="btn primary" data-a="c-save">' + (c.isEdit ? 'Update check-in' : 'Save check-in') + '</button>';
     var recent = DB.checks.slice(-5).reverse();
-    if (recent.length) h += '<h2 class="h2">Recent</h2><div class="card list">' + recent.map(function (x) { return '<div class="li small"><b>' + fmtShort(x.date) + '</b> · sleep ' + fix1(x.sleep) + ' h · HR ' + x.hr + ' · ' + fix1(x.bw) + ' lb' + (x.ready ? ' · ready ' + x.ready : '') + (x.pain != null ? ' · shoulder ' + x.pain : '') + '</div>'; }).join('') + '</div>';
+    if (recent.length) h += '<h2 class="h2">Recent</h2><div class="card list">' + recent.map(function (x) { return '<div class="li small"><b>' + fmtShort(x.date) + '</b>' + (x.sleep != null ? ' · sleep ' + fix1(x.sleep) + ' h' : '') + (x.hr ? ' · HR ' + x.hr : '') + (x.bw ? ' · ' + fix1(x.bw) + ' lb' : '') + (x.protein ? ' · protein ' + Math.round(x.protein) + ' g' : '') + (x.ready ? ' · ready ' + x.ready : '') + (x.pain != null ? ' · shoulder ' + x.pain : '') + '</div>'; }).join('') + '</div>';
     return h + '</div>';
   }
 
-  var BODY_SINGLE = [['waist', 'Waist (at navel)'], ['shoulders', 'Shoulders (widest point)'], ['chest', 'Chest']];
-  var BODY_PAIR = [['arm', 'Arm (flexed)'], ['thigh', 'Thigh (midpoint)'], ['calf', 'Calf (widest)']];
+  var BODY_SINGLE = [['waist', 'Waist (at navel)'], ['shoulders', 'Shoulders (widest point)']];
+  var BODY_PAIR = [['arm', 'Arm (flexed)']];
+  var BODY_KEYS = ['waist', 'shoulders', 'armL', 'armR'];
   function renderBody() {
     if (!UI.body) {
       var prev = lastOf(DB.body);
-      UI.body = prev ? JSON.parse(JSON.stringify(prev)) : { waist: 32, shoulders: 48, chest: 42, armL: 14.5, armR: 14.75, thighL: 22, thighR: 22.25, calfL: 15, calfR: 15, note: '' };
+      UI.body = { waist: 32, shoulders: 48, armL: 14.5, armR: 14.75, note: '' };
+      if (prev) BODY_KEYS.forEach(function (k) { if (prev[k] != null) UI.body[k] = prev[k]; });
       UI.body.date = today(); UI.body.note = '';
     }
     var b = UI.body, prev = lastOf(DB.body);
-    var h = '<div class="scroll"><div class="stack" style="gap:4px"><div class="kicker">Every 2 weeks · inches · same time of day</div><h1 class="h1">Body measurements</h1>' +
-      (prev ? '<div class="small">Last measured ' + fmtDay(prev.date) + (daysBetween(prev.date, today()) < 12 ? '. Next due around ' + fmtShort(addDays(prev.date, 14)) + '.' : '. Due now.') + ' Values start from last time.</div>' : '<div class="small">Values below are placeholders. Set each one, then save.</div>') + '<button class="btn link" style="align-self:flex-start;padding:0;min-height:36px" data-a="how-measure">How to measure</button></div>';
+    var h = '<div class="scroll"><div class="stack" style="gap:4px"><div class="kicker">Once a month · inches · morning, before eating</div><h1 class="h1">Body measurements</h1>' +
+      (prev ? '<div class="small">Last measured ' + fmtDay(prev.date) + (daysBetween(prev.date, today()) < P.MEASURE_DAYS - 2 ? '. Next due around ' + fmtShort(addDays(prev.date, P.MEASURE_DAYS)) + '.' : '. Due now.') + ' Values start from last time.</div>' : '<div class="small">Values below are placeholders. Set each one, then save.</div>') + '<button class="btn link" style="align-self:flex-start;padding:0;min-height:36px" data-a="how-measure">How to measure</button></div>';
     h += '<div class="grid2"><div class="stat dark"><span class="label">Shoulder : waist</span><span class="v">' + (b.shoulders / b.waist).toFixed(2) + '</span><span class="small">Goal: up 0.03–0.06 by wk 12</span></div>' +
-      '<div class="stat dark"><span class="label">Chest : waist</span><span class="v">' + (b.chest / b.waist).toFixed(2) + '</span><span class="small">' + (prev ? 'Waist ' + (b.waist - prev.waist >= 0 ? '+' : '') + fix2(b.waist - prev.waist) + ' in vs last' : 'Updates as you adjust') + '</span></div></div>';
+      '<div class="stat dark"><span class="label">Arm L/R gap</span><span class="v">' + (Math.max(b.armL, b.armR) ? (Math.abs(b.armL - b.armR) / Math.max(b.armL, b.armR) * 100).toFixed(1) : '0.0') + '%</span><span class="small">' + (prev && prev.waist ? 'Waist ' + (b.waist - prev.waist >= 0 ? '+' : '') + fix2(b.waist - prev.waist) + ' in vs last' : 'Goal: under 10%') + '</span></div></div>';
     BODY_SINGLE.forEach(function (f) { h += stepper(f[1], fix2(b[f[0]]), 'b-' + f[0], 'b-step-' + f[0], true); });
     BODY_PAIR.forEach(function (f) {
       var L = b[f[0] + 'L'], R = b[f[0] + 'R'], g = Math.max(L, R) ? Math.abs(L - R) / Math.max(L, R) * 100 : 0;
@@ -490,10 +554,10 @@
     return h + '</div>';
   }
 
-  var CARDIO_TYPES = ['Walk (zone 2)', 'Incline treadmill', 'Intervals (bike)', 'Intervals (rower)', 'Other'];
+  var CARDIO_TYPES = ['Walk (zone 2)', 'Incline treadmill', 'Footwork + intervals', 'Footwork + walk', 'Intervals (bike)', 'Intervals (rower)', 'Other'];
   function renderCardio() {
-    if (!UI.cardio) UI.cardio = { date: today(), type: new Date().getDay() === 5 && DB.pos.wk >= 3 ? 'Intervals (bike)' : 'Walk (zone 2)', min: 40, dist: 2.0, hr: '', intervals: '', rpe: null, note: '' };
-    var c = UI.cardio, isInt = c.type.indexOf('Intervals') === 0;
+    if (!UI.cardio) UI.cardio = { date: today(), type: new Date().getDay() === 5 ? (DB.pos.wk >= 3 && P.INTERVALS[DB.pos.wk] ? 'Footwork + intervals' : 'Footwork + walk') : 'Walk (zone 2)', min: new Date().getDay() === 2 ? 45 : 40, dist: 2.0, hr: '', intervals: '', rpe: null, note: '' };
+    var c = UI.cardio, isInt = /Intervals|intervals/.test(c.type);
     if (isInt && !c.intervals) c.intervals = P.INTERVALS[DB.pos.wk] || '6 × 30 s';
     var h = '<div class="topbar"><button class="back" data-a="back">' + IC.back + 'Back</button></div><div class="scroll" style="gap:18px">' +
       '<div class="stack" style="gap:4px"><div class="kicker">' + fmtDay(c.date) + '</div><h1 class="h1">Log cardio</h1></div>' +
@@ -501,7 +565,7 @@
     h += stepper('Minutes', String(c.min), 'k-min', 'k-step-min', true, 'numeric');
     h += stepper('Distance (miles, optional)', fix1(c.dist), 'k-dist', 'k-step-dist', true);
     h += '<div class="stack"><label class="label" for="khr">Average heart rate (optional)</label><input id="khr" class="field" type="text" inputmode="numeric" data-f="k-hr" value="' + esc(c.hr) + '"></div>';
-    if (isInt) h += '<div class="stack"><label class="label" for="kint">Intervals</label><input id="kint" class="field" type="text" data-f="k-intervals" value="' + esc(c.intervals) + '"><div class="small">Hard 30 s, easy 90 s.</div></div>';
+    if (isInt) h += '<div class="stack"><label class="label" for="kint">Intervals</label><input id="kint" class="field" type="text" data-f="k-intervals" value="' + esc(c.intervals) + '"><div class="small">Hard 30 s, easy 90 s. Zone 2 is about 100–120 bpm, or a pace where you can still talk.</div></div>';
     h += '<div class="stack"><div class="label">Effort (optional) · 1–10</div>' + chipRow(nums(1, 10), 5, c.rpe, 'k-rpe', null, true) + '</div>';
     h += '<div class="stack"><label class="label" for="knote">Notes (optional)</label><textarea id="knote" data-f="k-note">' + esc(c.note) + '</textarea></div>';
     h += '<button class="btn primary" data-a="k-save">Save cardio</button>';
@@ -518,9 +582,21 @@
       var from = addDays(c.date, -6), win = cks.filter(function (x) { return x.date >= from && x.date <= c.date; });
       return { x: parseD(c.date).getTime(), y: win.reduce(function (s, x) { return s + x.bw; }, 0) / win.length };
     });
+    var wt = weightTrend(), pw = proteinWeek(today());
+    h += '<h2 class="h2">Daily basics</h2><div class="grid2">' +
+      '<div class="stat"><span class="label">Weight change, 7-day avg</span><span class="v">' + (wt.change == null ? '–' : (wt.change > 0 ? '+' : '') + fix1(wt.change)) + '<span style="font-size:16px"> lb/wk</span></span><span class="small">Target −' + N.lossPerWeek[0] + ' to −' + N.lossPerWeek[1].toFixed(1) + (wt.change != null ? ' · ' + trendStatus(wt.change) : ' · needs 3+ weigh-ins in each of 2 weeks') + '</span></div>' +
+      '<div class="stat"><span class="label">Protein, last 7 days</span><span class="v">' + (pw.avg == null ? '–' : Math.round(pw.avg)) + '<span style="font-size:16px"> g/day</span></span><span class="small">Target hit ' + pw.hit + ' of ' + pw.n + ' logged days</span></div></div>';
     h += '<div class="card pad stack chart"><div class="label">Body weight, 7-day average (lb)</div>' + lineChart(bwPts, { label: 'Body weight', fmt: fix1 }) + '</div>';
-    var waist = DB.body.map(function (b) { return { x: parseD(b.date).getTime(), y: b.waist }; });
+    var pDates = {}; DB.checks.forEach(function (c) { if (c.protein > 0) pDates[c.date] = 1; }); DB.nutrition.forEach(function (o) { if (fullDay(o)) pDates[o.date] = 1; });
+    var pPts = Object.keys(pDates).sort().map(function (d) { return { x: parseD(d).getTime(), y: proteinOn(d) }; });
+    h += '<div class="card pad stack chart"><div class="label">Protein per day (g) · target ' + N.protein[0] + '+</div>' + lineChart(pPts, { label: 'Protein', fmt: function (v) { return Math.round(v) + ' g'; } }) + '</div>';
+    var waist = DB.body.filter(function (b) { return b.waist; }).map(function (b) { return { x: parseD(b.date).getTime(), y: b.waist }; });
+    var sw = DB.body.filter(function (b) { return b.waist && b.shoulders; }).map(function (b) { return { x: parseD(b.date).getTime(), y: b.shoulders / b.waist }; });
+    h += '<h2 class="h2">Shape (monthly)</h2>';
     h += '<div class="card pad stack chart"><div class="label">Waist (in)</div>' + lineChart(waist, { label: 'Waist', fmt: fix2 }) + '</div>';
+    h += '<div class="card pad stack chart"><div class="label">Shoulder-to-waist ratio · goal up 0.03–0.06</div>' + lineChart(sw, { label: 'Shoulder to waist', fmt: fix2 }) + '</div>';
+    var lbm = lastOf(DB.body);
+    if (lbm && lbm.armL && lbm.armR) { var ag = Math.abs(lbm.armL - lbm.armR) / Math.max(lbm.armL, lbm.armR) * 100; h += '<div class="card pad small">Arm left/right gap, ' + fmtShort(lbm.date) + ': <b>' + ag.toFixed(1) + '%</b> (L ' + fix2(lbm.armL) + ', R ' + fix2(lbm.armR) + ' in). Goal under 10%.</div>'; }
     if (DB.nutrition.length) {
       var wkN = nutritionWeek(lastOf(DB.nutrition).date), fullAll = DB.nutrition.filter(fullDay), stale = '';
       if (!wkN.logged && fullAll.length) { stale = 'No fully logged days in the latest week (' + fmtShort(wkN.from) + '\u2013' + fmtShort(wkN.to) + '). Showing the most recent week that has some. '; wkN = nutritionWeek(lastOf(fullAll).date); }
@@ -581,7 +657,7 @@
     Object.keys(groups).forEach(function (k) {
       var g = groups[k], ex = sess.ex[k];
       h += '<div class="card list"><div class="li" style="font-weight:700">' + esc(g[0].ex) + '</div>' + g.map(function (x) {
-        return '<div class="li row"><span class="grow setd" style="font-size:17px">' + (x.side !== 'Both' ? x.side + ' ' : '') + setTxt(ex, x, true) + (x.rpe ? ' · RPE ' + x.rpe : '') + (x.pain != null ? ' · shoulder ' + x.pain : '') + (x.extra ? ' · extra' : '') + '</span>' +
+        return '<div class="li row"><span class="grow setd" style="font-size:17px">' + (x.side !== 'Both' ? x.side + ' ' : '') + setTxt(ex, x, true) + (x.rir != null ? ' · RIR ' + (x.rir >= 5 ? '5+' : x.rir) : (x.rpe ? ' · RPE ' + x.rpe : '')) + (x.pain != null ? ' · shoulder ' + x.pain : '') + (x.extra ? ' · extra' : '') + '</span>' +
           '<button class="btn link" data-a="del-set" data-v="' + x.id + '" aria-label="Delete this set">Delete</button></div>';
       }).join('') + '</div>';
     });
@@ -743,10 +819,10 @@
       if (/Assisted/.test(s.orig) && s.ex === s.orig) n.push('Weight = assistance');
       log.push([s.date, s.wk, P.PHASES[s.wk] || '', getSession(s.key).name, s.ex, s.side, s.setNo, s.bw ? '' : s.w, s.r, s.rpe == null ? '' : s.rpe, s.pain == null ? '' : s.pain, n.join('; ')]);
     });
-    var chk = [['Date', 'Week', 'Sleep (h)', 'Readiness (1-5)', 'Soreness (1-5)', 'Resting HR (bpm)', 'Shoulder AM (0-10)', 'Body weight (lb)', 'Notes']];
-    DB.checks.forEach(function (c) { chk.push([c.date, calWeek(c.date), c.sleep, c.ready == null ? '' : c.ready, c.sore == null ? '' : c.sore, c.hr, c.pain == null ? '' : c.pain, c.bw, (c.pt ? 'PT done' : 'PT not done') + (c.note ? '; ' + c.note : '')]); });
+    var chk = [['Date', 'Week', 'Sleep (h)', 'Readiness (1-5)', 'Soreness (1-5)', 'Resting HR (bpm)', 'Shoulder AM (0-10)', 'Body weight (lb)', 'Protein (g)', 'Notes']];
+    DB.checks.forEach(function (c) { var full = c.sleep != null; chk.push([c.date, calWeek(c.date), full ? c.sleep : '', c.ready == null ? '' : c.ready, c.sore == null ? '' : c.sore, c.hr || '', c.pain == null ? '' : c.pain, c.bw || '', c.protein || '', (full ? (c.pt ? 'PT done' : 'PT not done') : 'Protein only') + (c.note ? '; ' + c.note : '')]); });
     var body = [['Date', 'Week', 'Waist', 'Shoulders', 'Chest', 'Arm L', 'Arm R', 'Thigh L', 'Thigh R', 'Calf L', 'Calf R', 'Notes']];
-    DB.body.forEach(function (b) { body.push([b.date, calWeek(b.date), b.waist, b.shoulders, b.chest, b.armL, b.armR, b.thighL, b.thighR, b.calfL, b.calfR, b.note || '']); });
+    DB.body.forEach(function (b) { body.push([b.date, calWeek(b.date), b.waist, b.shoulders, b.chest, b.armL, b.armR, b.thighL, b.thighR, b.calfL, b.calfR, b.note || '']); }); /* chest, thigh, calf: older records only */
     var car = [['Date', 'Week', 'Type', 'Minutes', 'Distance (mi)', 'Avg HR', 'Intervals (e.g. 6x30s)', 'RPE (1-10)', 'Notes']];
     DB.cardio.forEach(function (c) { car.push([c.date, calWeek(c.date), c.type, c.min, c.dist || '', c.hr || '', c.intervals || '', c.rpe == null ? '' : c.rpe, c.note || '']); });
     var nut = [['Date', 'Week', 'Energy (kcal)', 'Protein (g)', 'Carbs (g)', 'Fat (g)', 'Fiber (g)', 'Alcohol (g)', 'Fully logged']];
@@ -802,7 +878,7 @@
     'extra-off': function () { UI.extra = false; },
     'w-step': function (v, el) { var a = DB.active, ex = getSession(a.key).ex[a.exIdx]; stepVal(a, 'w', +el.dataset.d, ex.step, 0); save(); },
     'r-step': function (v, el) { stepVal(DB.active, 'r', +el.dataset.d, 1, 0); save(); },
-    rpe: function (v) { var a = DB.active; a.rpe = a.rpe === +v ? null : +v; save(); },
+    rir: function (v) { var a = DB.active; a.rir = a.rir === +v ? null : +v; save(); },
     pain: function (v) { var a = DB.active; a.pain = a.pain === +v ? null : +v; save(); },
     side: function (v) { DB.active.side = v; save(); },
     'rest-add': function () { var a = DB.active, base = a.restDone ? Date.now() : a.timerEnd; a.timerEnd = base + 30000; a.timerTotal = Math.max(a.timerTotal, (a.timerEnd - Date.now()) / 1000); a.restDone = false; save(); },
@@ -843,17 +919,26 @@
     'c-step-sleep': function (v, el) { stepVal(UI.check, 'sleep', +el.dataset.d, 0.5, 0, 14); },
     'c-step-hr': function (v, el) { stepVal(UI.check, 'hr', +el.dataset.d, 1, 30, 150); },
     'c-step-bw': function (v, el) { stepVal(UI.check, 'bw', +el.dataset.d, 0.2, 50, 400); },
+    'c-step-protein': function (v, el) { stepVal(UI.check, 'protein', +el.dataset.d, 5, 0, 400); UI.check._p0 = 1; },
+    'p-add': function (v) {
+      var t = today(), c = checkOn(t);
+      if (!c) { c = { date: t, sleep: null, hr: null, bw: null, ready: null, sore: null, pain: null, pt: false, protein: 0, note: '' }; DB.checks.push(c); DB.checks.sort(function (a, b) { return a.date < b.date ? -1 : 1; }); }
+      c.protein = Math.max(0, Math.round((c.protein || 0) + (+v)));
+      save(); UI.check = null; toast('Protein today: ' + c.protein + ' g');
+      return true;
+    },
     'c-ready': function (v) { UI.check.ready = UI.check.ready === +v ? null : +v; },
     'c-sore': function (v) { UI.check.sore = UI.check.sore === +v ? null : +v; },
     'c-pain': function (v) { UI.check.pain = UI.check.pain === +v ? null : +v; },
     'c-pt': function (v) { UI.check.pt = v === '1'; },
     'c-save': function () {
-      var c = UI.check, rec = { date: c.date, sleep: c.sleep, hr: c.hr, bw: c.bw, ready: c.ready, sore: c.sore, pain: c.pain, pt: c.pt, note: c.note || '' };
+      var c = UI.check, old = checkOn(c.date), rec = { date: c.date, sleep: c.sleep, hr: c.hr, bw: c.bw, ready: c.ready, sore: c.sore, pain: c.pain, pt: c.pt, protein: c.protein || 0, note: c.note || '' };
+      if (old && old.protein > (c.protein || 0) && c._p0 == null) rec.protein = old.protein;
       DB.checks = DB.checks.filter(function (x) { return x.date !== c.date; }); DB.checks.push(rec); DB.checks.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
       save(); UI.check = null; toast('Check-in saved'); return true;
     },
     'b-save': function () {
-      var b = UI.body, rec = {}; ['date', 'waist', 'shoulders', 'chest', 'armL', 'armR', 'thighL', 'thighR', 'calfL', 'calfR', 'note'].forEach(function (k) { rec[k] = b[k]; });
+      var b = UI.body, rec = {}; ['date'].concat(BODY_KEYS, ['note']).forEach(function (k) { rec[k] = b[k]; });
       DB.body = DB.body.filter(function (x) { return x.date !== b.date; }); DB.body.push(rec); DB.body.sort(function (a, c) { return a.date < c.date ? -1 : 1; });
       save(); UI.body = null; toast('Measurements saved'); return true;
     },
@@ -862,7 +947,7 @@
     'k-step-dist': function (v, el) { stepVal(UI.cardio, 'dist', +el.dataset.d, 0.1, 0, 50); },
     'k-rpe': function (v) { UI.cardio.rpe = UI.cardio.rpe === +v ? null : +v; },
     'k-save': function () {
-      var c = UI.cardio, isInt = c.type.indexOf('Intervals') === 0;
+      var c = UI.cardio, isInt = /Intervals|intervals/.test(c.type);
       DB.cardio.push({ date: c.date, type: c.type, min: c.min, dist: c.dist || '', hr: c.hr ? +c.hr : '', intervals: isInt ? c.intervals : '', rpe: c.rpe, note: c.note || '' });
       save(); UI.cardio = null; UI.screen = null; toast('Cardio saved'); return true;
     }
@@ -888,7 +973,7 @@
       el.value = ''; return;
     }
     if (f === 'w' || f === 'r') { if (!isNaN(n) && n >= 0) { DB.active[f] = f === 'r' ? Math.round(n) : n; save(); } render(); return; }
-    if (f.indexOf('c-') === 0) { var k = f.slice(2); if (k === 'note') UI.check.note = v; else if (!isNaN(n)) UI.check[k] = n; render(); return; }
+    if (f.indexOf('c-') === 0) { var k = f.slice(2); if (k === 'note') UI.check.note = v; else if (!isNaN(n)) { UI.check[k] = n; if (k === 'protein') UI.check._p0 = 1; } render(); return; }
     if (f.indexOf('b-') === 0) { var kb = f.slice(2); if (kb === 'note') UI.body.note = v; else if (!isNaN(n)) UI.body[kb] = n; render(); return; }
     if (f.indexOf('k-') === 0) { var kk = f.slice(2); if (kk === 'note' || kk === 'intervals' || kk === 'hr') UI.cardio[kk] = v; else if (!isNaN(n)) UI.cardio[kk] = n; render(); return; }
     if (f === 's-start') { if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { DB.settings.start = v; save(); } render(); return; }
