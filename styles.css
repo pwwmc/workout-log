@@ -46,6 +46,10 @@ a { color: var(--blue); }
 .tag.uni { background: var(--blue-soft); color: var(--blue-ink); }
 .tag.care { background: var(--orange-soft); color: var(--orange-ink); }
 .tag.swap { background: #ECE9E2; color: var(--ink); }
+.tag.power { background: #EDE7F6; color: #4527A0; }
+.tag.heavy { background: #1F2328; color: #fff; }
+.tag.moderate { background: #E6E3DC; color: #1F2328; }
+.tag.pt { background: #FFF4CC; color: #7A4B00; border: 1px solid #E8C766; }
 .note { font-size: 16px; font-weight: 600; border-radius: 10px; padding: 10px 12px; line-height: 1.4; }
 .note.info { background: var(--blue-soft); color: var(--blue-ink); }
 .note.warn { background: var(--orange-soft); color: var(--orange-ink); }

@@ -1,5 +1,5 @@
 /* Offline cache. Bump VERSION on every release so phones pick up the update. */
-const VERSION = 'v1.1.1';
+const VERSION = 'v1.2.0';
 const CACHE = 'workout-log-' + VERSION;
 const FILES = [
   './', 'index.html', 'styles.css', 'program.js', 'app.js', 'manifest.webmanifest',
